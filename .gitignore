@@ -1,0 +1,15 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller builds
+build/
+dist/
+
+# Database (keep folder structure but ignore JSON files)
+database/*.json
+
+# OS generated files
+.DS_Store
+Thumbs.db

@@ -1,354 +1,903 @@
 import os
 import json
+import webbrowser
 import tkinter as tk
-from tkinter import messagebox, ttk
-from typing import Dict, Optional
+from typing import Dict, List, Optional
+
+import customtkinter as ctk
+import tkinter.messagebox as messagebox
 
 from config import (
-    DATABASE_DIR, FONT_FAMILY, COLOR_PRIMARY, COLOR_PRIMARY_DARK,
-    COLOR_BG_LIGHT, COLOR_TEXT_DARK, COLOR_SUCCESS, COLOR_INFO,
-    COLOR_DANGER, COLOR_DARK_BOX
+    DATABASE_DIR, FONT_FAMILY, 
+    COLOR_BG_MAIN, COLOR_BG_SIDEBAR, COLOR_BG_CARD, COLOR_BG_INPUT,
+    COLOR_TEXT_LIGHT, COLOR_TEXT_MUTED,
+    COLOR_ACCENT_CYAN, COLOR_ACCENT_TEAL, COLOR_DANGER, COLOR_SUCCESS
 )
 from utils import ColorConverter
-from models import Project
-from components import ScrollableFrame, ModernButton, ModernEntry
+from models import Project, GlobalShortlinkStore, GlobalSnippetStore
 
+EMOJI_LIST = [
+    "🌐", "🔗", "📌", "⭐", "🚀", "📦", "🎨", "🛠️",
+    "📝", "🔍", "💡", "🏠", "📊", "📱", "💻", "🖥️",
+    "⚙️", "🔧", "🔨", "🗂️", "📁", "🌟", "✅", "⚡",
+    "🎯", "🧩", "🔐", "🔑", "🌈", "🐙", "🦊", "🔵",
+    "🟢", "🔴", "🟡", "🔥", "💎", "🏆", "📮", "🗃️",
+    "📋", "🖊️", "🔖", "🧲", "🔔", "🌍", "📡", "🛡️",
+    "🪝", "🪄", "🧪", "🔬", "🗺️", "🎭", "🎪", "💬",
+]
 
-class HomeView(tk.Frame):
-    """Main view"""
-    def __init__(self, parent, controller) -> None:
-        super().__init__(parent, bg=COLOR_PRIMARY)
-        self.controller = controller
+# ============================================================================
+# DIALOGS
+# ============================================================================
+
+class EmojiPickerDialog(ctk.CTkToplevel):
+    def __init__(self, parent, current_emoji: str, callback):
+        super().__init__(parent)
+        self.title("Select Icon")
+        self.geometry("380x320")
+        self.resizable(False, False)
+        self.attributes('-alpha', 0.98)
+        self.configure(fg_color=COLOR_BG_CARD)
+        self.callback = callback
         
-        t_frame = tk.Frame(self, bg=COLOR_PRIMARY)
-        t_frame.pack(fill="x", pady=(15, 5))
-        tk.Label(t_frame, text="Efficiweb v.01", font=(FONT_FAMILY, 20, "bold"), fg="#FFFFFF", bg=COLOR_PRIMARY).pack()
-        tk.Label(t_frame, text="webdev tools & utilities", font=(FONT_FAMILY, 10, "italic"), fg="#E6DADA", bg=COLOR_PRIMARY).pack()
+        self.transient(parent)
+        self.grab_set()
         
-        list_outer = tk.Frame(self, bg="#E0D6D6", padx=2, pady=2)
-        list_outer.pack(fill="both", expand=True, padx=20, pady=(10, 10))
+        ctk.CTkLabel(self, text="Select Shortlink Icon", font=(FONT_FAMILY, 16, "bold"), text_color=COLOR_TEXT_LIGHT).pack(pady=(15, 10))
         
-        self.project_listbox = tk.Listbox(
-            list_outer, font=(FONT_FAMILY, 11, "bold"), fg=COLOR_TEXT_DARK, bg="#DCD1D1",
-            relief="flat", bd=0, selectbackground=COLOR_PRIMARY_DARK, selectforeground="#FFFFFF",
-            highlightthickness=0, activestyle="none"
+        scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        
+        cols = 6
+        for i, emoji in enumerate(EMOJI_LIST):
+            is_active = (emoji == current_emoji)
+            btn = ctk.CTkButton(
+                scroll, text=emoji, width=40, height=40, font=("Segoe UI Emoji", 18),
+                fg_color=COLOR_ACCENT_CYAN if is_active else COLOR_BG_INPUT,
+                text_color="#000000" if is_active else COLOR_TEXT_LIGHT,
+                hover_color=COLOR_ACCENT_TEAL,
+                command=lambda e=emoji: self._select(e)
+            )
+            btn.grid(row=i // cols, column=i % cols, padx=5, pady=5)
+            
+    def _select(self, emoji):
+        self.callback(emoji)
+        self.destroy()
+
+class ShortlinkFormDialog(ctk.CTkToplevel):
+    def __init__(self, parent, title: str, initial_data: Optional[Dict] = None, on_submit=None):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("400x380")
+        self.resizable(False, False)
+        self.attributes('-alpha', 0.98)
+        self.configure(fg_color=COLOR_BG_CARD)
+        self.on_submit = on_submit
+        
+        self.transient(parent)
+        self.grab_set()
+        
+        self.selected_emoji = initial_data.get("icon", "🔗") if initial_data else "🔗"
+        
+        ctk.CTkLabel(self, text=title, font=(FONT_FAMILY, 18, "bold"), text_color=COLOR_ACCENT_CYAN).pack(pady=(20, 15))
+        
+        icon_frame = ctk.CTkFrame(self, fg_color="transparent")
+        icon_frame.pack(fill="x", padx=30, pady=10)
+        ctk.CTkLabel(icon_frame, text="Icon:", font=(FONT_FAMILY, 12, "bold"), text_color=COLOR_TEXT_MUTED).pack(side="left")
+        self.icon_btn = ctk.CTkButton(
+            icon_frame, text=self.selected_emoji, width=50, height=40, font=("Segoe UI Emoji", 18),
+            fg_color=COLOR_BG_INPUT, hover_color=COLOR_BG_MAIN,
+            command=self._open_emoji_picker
         )
-        self.project_listbox.pack(side="left", fill="both", expand=True)
+        self.icon_btn.pack(side="left", padx=10)
         
-        list_scroll = tk.Scrollbar(list_outer, orient="vertical", command=self.project_listbox.yview)
-        list_scroll.pack(side="right", fill="y")
-        self.project_listbox.configure(yscrollcommand=list_scroll.set)
+        self.name_entry = ctk.CTkEntry(self, placeholder_text="Display Name", height=40, fg_color=COLOR_BG_INPUT, border_color=COLOR_BG_MAIN)
+        self.name_entry.pack(fill="x", padx=30, pady=10)
         
-        btn_frame = tk.Frame(self, bg=COLOR_PRIMARY)
-        btn_frame.pack(fill="x", side="bottom", pady=(0, 15), padx=20)
-        for i in range(3): 
-            btn_frame.columnconfigure(i, weight=1)
+        self.url_entry = ctk.CTkEntry(self, placeholder_text="URL / Link", height=40, fg_color=COLOR_BG_INPUT, border_color=COLOR_BG_MAIN)
+        self.url_entry.pack(fill="x", padx=30, pady=10)
         
-        self.btn_new = ModernButton(btn_frame, text="NEW PROJECT", bg_color=COLOR_SUCCESS, font=(FONT_FAMILY, 8, "bold"), command=self.open_new_project_dialog)
-        self.btn_new.grid(row=0, column=0, padx=(0, 4), sticky="ew")
-        self.btn_load = ModernButton(btn_frame, text="LOAD", bg_color=COLOR_INFO, font=(FONT_FAMILY, 8, "bold"), command=self.load_selected_project)
-        self.btn_load.grid(row=0, column=1, padx=2, sticky="ew")
-        self.btn_delete = ModernButton(btn_frame, text="DELETE", bg_color=COLOR_DANGER, font=(FONT_FAMILY, 8, "bold"), command=self.delete_selected_project)
-        self.btn_delete.grid(row=0, column=2, padx=(4, 0), sticky="ew")
+        if initial_data:
+            self.name_entry.insert(0, initial_data.get("name", ""))
+            self.url_entry.insert(0, initial_data.get("url", ""))
+            
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=30, pady=20)
         
+        ctk.CTkButton(btn_frame, text="Cancel", width=100, fg_color=COLOR_DANGER, hover_color="#CC0000", text_color="#FFFFFF", command=self.destroy).pack(side="left")
+        ctk.CTkButton(btn_frame, text="Submit", width=100, fg_color=COLOR_SUCCESS, hover_color="#444444", text_color="#FFFFFF", command=self._submit).pack(side="right")
+        
+    def _open_emoji_picker(self):
+        EmojiPickerDialog(self, self.selected_emoji, self._update_emoji)
+        
+    def _update_emoji(self, emoji):
+        self.selected_emoji = emoji
+        self.icon_btn.configure(text=emoji)
+        
+    def _submit(self):
+        name = self.name_entry.get().strip()
+        url = self.url_entry.get().strip()
+        if not name or not url:
+            messagebox.showerror("Error", "Name and URL are required!", parent=self)
+            return
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        if self.on_submit:
+            self.on_submit({"icon": self.selected_emoji, "name": name, "url": url})
+        self.destroy()
+
+class CssSnippetFormDialog(ctk.CTkToplevel):
+    def __init__(self, parent, title: str, initial_data: Optional[Dict] = None, on_submit=None):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("600x500")
+        self.minsize(500, 450)
+        self.attributes('-alpha', 0.98)
+        self.configure(fg_color=COLOR_BG_CARD)
+        self.on_submit = on_submit
+        
+        self.transient(parent)
+        self.grab_set()
+        
+        header = ctk.CTkFrame(self, fg_color=COLOR_BG_MAIN, corner_radius=0)
+        header.pack(fill="x")
+        ctk.CTkLabel(header, text=f"📋 {title}", font=(FONT_FAMILY, 16, "bold"), text_color=COLOR_ACCENT_CYAN, anchor="w").pack(padx=20, pady=15, fill="x")
+        
+        self.name_entry = ctk.CTkEntry(self, placeholder_text="Snippet Name", height=40, fg_color=COLOR_BG_INPUT, border_color=COLOR_BG_MAIN)
+        self.name_entry.pack(fill="x", padx=20, pady=(20, 10))
+        
+        ctk.CTkLabel(self, text="CSS Code:", font=(FONT_FAMILY, 12, "bold"), text_color=COLOR_TEXT_MUTED, anchor="w").pack(fill="x", padx=20)
+        
+        self.code_text = ctk.CTkTextbox(self, font=("Consolas", 13), fg_color=COLOR_BG_INPUT, border_color=COLOR_BG_MAIN, border_width=2)
+        self.code_text.pack(fill="both", expand=True, padx=20, pady=(5, 10))
+        self.code_text.bind("<Tab>", self._on_tab)
+        
+        if initial_data:
+            self.name_entry.insert(0, initial_data.get("name", ""))
+            self.code_text.insert("1.0", initial_data.get("code", ""))
+            
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(10, 20))
+        
+        ctk.CTkButton(btn_frame, text="Cancel", width=120, fg_color=COLOR_DANGER, hover_color="#CC0000", text_color="#FFFFFF", command=self.destroy).pack(side="left")
+        ctk.CTkButton(btn_frame, text="Save Snippet", width=120, fg_color=COLOR_SUCCESS, hover_color="#444444", text_color="#FFFFFF", command=self._submit).pack(side="right")
+        
+    def _on_tab(self, event):
+        self.code_text.insert("insert", "    ")
+        return "break"
+        
+    def _submit(self):
+        name = self.name_entry.get().strip()
+        code = self.code_text.get("1.0", "end").strip()
+        if not name or not code:
+            messagebox.showerror("Error", "Name and Code cannot be empty!", parent=self)
+            return
+        if self.on_submit:
+            self.on_submit({"name": name, "code": code})
+        self.destroy()
+
+class CssSnippetViewDialog(ctk.CTkToplevel):
+    def __init__(self, parent, snippet: Dict):
+        super().__init__(parent)
+        self.title(snippet.get("name", "Snippet"))
+        self.geometry("600x500")
+        self.minsize(400, 300)
+        self.attributes('-alpha', 0.98)
+        self.configure(fg_color=COLOR_BG_CARD)
+        
+        self.transient(parent)
+        self.grab_set()
+        
+        header = ctk.CTkFrame(self, fg_color=COLOR_BG_MAIN, corner_radius=0)
+        header.pack(fill="x")
+        ctk.CTkLabel(header, text=f"📋 {snippet.get('name', '')}", font=(FONT_FAMILY, 16, "bold"), text_color=COLOR_ACCENT_TEAL, anchor="w").pack(padx=20, pady=15, fill="x")
+        
+        code = snippet.get("code", "")
+        
+        self.code_text = ctk.CTkTextbox(self, font=("Consolas", 13), fg_color=COLOR_BG_INPUT)
+        self.code_text.pack(fill="both", expand=True, padx=20, pady=20)
+        self.code_text.insert("1.0", code)
+        self.code_text.configure(state="disabled")
+        
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.pack(fill="x", padx=20, pady=(0, 20))
+        
+        self.copy_btn = ctk.CTkButton(bottom, text="⎘ Copy All", fg_color=COLOR_ACCENT_CYAN, text_color="#000000", hover_color=COLOR_ACCENT_TEAL, command=lambda: self._copy(code))
+        self.copy_btn.pack(side="left")
+        ctk.CTkButton(bottom, text="Close", fg_color=COLOR_BG_INPUT, hover_color=COLOR_BG_MAIN, command=self.destroy).pack(side="right")
+        
+    def _copy(self, code):
+        self.clipboard_clear()
+        self.clipboard_append(code)
+        self.copy_btn.configure(text="✅ Copied!", fg_color=COLOR_SUCCESS, text_color="#FFFFFF")
+        self.after(1500, lambda: self.copy_btn.configure(text="⎘ Copy All", fg_color=COLOR_ACCENT_CYAN, text_color="#000000"))
+
+# ============================================================================
+# MAIN VIEWS
+# ============================================================================
+
+class HomeView(ctk.CTkFrame):
+    def __init__(self, parent, controller):
+        super().__init__(parent, fg_color=COLOR_BG_MAIN, corner_radius=0)
+        self.controller = controller
+        self._is_small_state = False
+        
+        # Use native tk.PanedWindow for zero-flicker sash
+        self.paned = tk.PanedWindow(
+            self, orient="horizontal", sashwidth=5, sashpad=0,
+            bg="#333333", bd=0, opaqueresize=True, sashrelief="flat"
+        )
+        self.paned.pack(fill="both", expand=True)
+        
+        # -- Sidebar --
+        self.sidebar = ctk.CTkFrame(self.paned, fg_color=COLOR_BG_SIDEBAR, corner_radius=0)
+        self.paned.add(self.sidebar, minsize=50, width=160, stretch="never")
+        
+        # Brand
+        brand_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        brand_frame.pack(fill="x", pady=30, padx=10)
+        self.lbl_brand = ctk.CTkLabel(brand_frame, text="EFFICIWEB", font=(FONT_FAMILY, 18, "bold"), text_color=COLOR_ACCENT_CYAN)
+        self.lbl_brand.pack(anchor="w")
+        self.lbl_brand_sub = ctk.CTkLabel(brand_frame, text="webdev tools", font=(FONT_FAMILY, 10, "italic"), text_color=COLOR_TEXT_MUTED)
+        self.lbl_brand_sub.pack(anchor="w")
+        
+        # Global Tools
+        self.lbl_global = ctk.CTkLabel(self.sidebar, text="GLOBAL", font=(FONT_FAMILY, 10, "bold"), text_color=COLOR_TEXT_MUTED)
+        self.lbl_global.pack(anchor="w", padx=10, pady=(20, 5))
+        
+        self.btn_sl = ctk.CTkButton(
+            self.sidebar, text="🔗 Shortlinks", font=(FONT_FAMILY, 13, "bold"),
+            fg_color="transparent", text_color=COLOR_TEXT_LIGHT, hover_color=COLOR_BG_CARD,
+            anchor="w", command=self.open_global_shortlinks
+        )
+        self.btn_sl.pack(fill="x", padx=5, pady=5)
+        
+        self.btn_css = ctk.CTkButton(
+            self.sidebar, text="💄 CSS", font=(FONT_FAMILY, 13, "bold"),
+            fg_color="transparent", text_color=COLOR_TEXT_LIGHT, hover_color=COLOR_BG_CARD,
+            anchor="w", command=self.open_global_css
+        )
+        self.btn_css.pack(fill="x", padx=5, pady=5)
+        
+        # -- Main Content --
+        self.main_content = ctk.CTkFrame(self.paned, fg_color=COLOR_BG_MAIN, corner_radius=0)
+        self.paned.add(self.main_content, minsize=200, stretch="always")
+        
+        inner = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        inner.pack(fill="both", expand=True, padx=30, pady=30)
+        inner.grid_rowconfigure(1, weight=1)
+        inner.grid_columnconfigure(0, weight=1)
+        
+        header_frame = ctk.CTkFrame(inner, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+        
+        ctk.CTkLabel(header_frame, text="Your Projects", font=(FONT_FAMILY, 28, "bold"), text_color=COLOR_TEXT_LIGHT).pack(side="left")
+        ctk.CTkButton(header_frame, text="＋ New Project", font=(FONT_FAMILY, 13, "bold"), fg_color=COLOR_ACCENT_CYAN, text_color="#000000", hover_color=COLOR_ACCENT_TEAL, command=self.open_new_project_dialog).pack(side="right")
+        
+        self.scroll_frame = ctk.CTkScrollableFrame(inner, fg_color="transparent")
+        self.scroll_frame.grid(row=1, column=0, sticky="nsew")
+        
+        # Bind sidebar resize to toggle icon-only mode
+        self.sidebar.bind("<Configure>", self._on_sidebar_resize)
+
+    def _on_sidebar_resize(self, event):
+        w = event.width
+        is_small = w < 130
+        if is_small != self._is_small_state:
+            self._is_small_state = is_small
+            if is_small:
+                self.lbl_brand.configure(text="EW")
+                self.lbl_brand_sub.pack_forget()
+                self.lbl_global.pack_forget()
+                self.btn_sl.configure(text="🔗", anchor="center")
+                self.btn_css.configure(text="💄", anchor="center")
+            else:
+                self.lbl_brand.configure(text="EFFICIWEB")
+                try:
+                    self.lbl_brand_sub.pack(anchor="w")
+                    self.lbl_global.pack(anchor="w", padx=10, pady=(20, 5))
+                except Exception:
+                    pass
+                self.btn_sl.configure(text="🔗 Shortlinks", anchor="w")
+                self.btn_css.configure(text="💄 CSS", anchor="w")
+
+    def on_show(self):
         self.refresh_projects()
         
-    def refresh_projects(self) -> None:
-        self.project_listbox.delete(0, tk.END)
-        if os.path.exists(DATABASE_DIR):
-            for file in os.listdir(DATABASE_DIR):
-                if file.endswith('.json'):
-                    try:
-                        with open(os.path.join(DATABASE_DIR, file), 'r', encoding='utf-8') as f:
-                            self.project_listbox.insert(tk.END, json.load(f).get("name", file[:-5]))
-                    except Exception: 
-                        pass
-
-    def open_new_project_dialog(self) -> None:
-        dialog = tk.Toplevel(self)
-        dialog.title("Create New Project")
-        dialog.geometry("360x450")
-        dialog.configure(bg=COLOR_BG_LIGHT)
+    def refresh_projects(self):
+        for w in self.scroll_frame.winfo_children():
+            w.destroy()
+            
+        if not os.path.exists(DATABASE_DIR) or not os.listdir(DATABASE_DIR):
+            ctk.CTkLabel(self.scroll_frame, text="No projects found. Create one to get started!", font=(FONT_FAMILY, 14), text_color=COLOR_TEXT_MUTED).pack(pady=40)
+            return
+            
+        for file in os.listdir(DATABASE_DIR):
+            if file.endswith('.json'):
+                try:
+                    with open(os.path.join(DATABASE_DIR, file), 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        self._create_project_card(data.get("name", file[:-5]), data.get("short_desc", ""))
+                except Exception:
+                    pass
+                    
+    def _create_project_card(self, name: str, desc: str):
+        card = ctk.CTkFrame(self.scroll_frame, fg_color=COLOR_BG_CARD, corner_radius=10)
+        card.pack(fill="x", pady=10, padx=5)
+        
+        info_frame = ctk.CTkFrame(card, fg_color="transparent")
+        info_frame.pack(side="left", fill="both", expand=True, padx=20, pady=20)
+        
+        ctk.CTkLabel(info_frame, text=name, font=(FONT_FAMILY, 18, "bold"), text_color=COLOR_TEXT_LIGHT).pack(anchor="w")
+        if desc:
+            ctk.CTkLabel(info_frame, text=desc, font=(FONT_FAMILY, 13), text_color=COLOR_TEXT_MUTED).pack(anchor="w")
+            
+        btn_frame = ctk.CTkFrame(card, fg_color="transparent")
+        btn_frame.pack(side="right", padx=20, pady=20)
+        
+        ctk.CTkButton(btn_frame, text="Open ➔", width=80, font=(FONT_FAMILY, 12, "bold"), fg_color=COLOR_ACCENT_TEAL, hover_color="#666666", text_color="#000000", command=lambda n=name: self.controller.open_project(n)).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="🗑", width=40, font=("Segoe UI Emoji", 14), fg_color=COLOR_BG_INPUT, text_color=COLOR_DANGER, hover_color="#333333", command=lambda n=name: self.delete_project(n)).pack(side="left", padx=5)
+        
+    def open_new_project_dialog(self):
+        dialog = ctk.CTkToplevel(self.controller)
+        dialog.title("New Project")
+        dialog.geometry("450x450")
         dialog.resizable(False, False)
+        dialog.attributes('-alpha', 0.98)
+        dialog.configure(fg_color=COLOR_BG_CARD)
         dialog.transient(self.controller)
         dialog.grab_set()
         
-        tk.Label(dialog, text="New Project Form", font=(FONT_FAMILY, 12, "bold"), bg=COLOR_BG_LIGHT, fg=COLOR_PRIMARY_DARK).pack(pady=(15, 10))
-        entry_name = ModernEntry(dialog, "PROJECT NAME")
-        entry_name.pack(fill="x", padx=20, pady=5)
-        entry_sdesc = ModernEntry(dialog, "DESCRIPTION")
-        entry_sdesc.pack(fill="x", padx=20, pady=5)
-        tk.Label(dialog, text="INFO", font=(FONT_FAMILY, 8, "bold"), fg=COLOR_TEXT_DARK, bg=COLOR_BG_LIGHT, anchor="w").pack(fill="x", padx=20, pady=(5, 2))
+        ctk.CTkLabel(dialog, text="Create New Project", font=(FONT_FAMILY, 20, "bold"), text_color=COLOR_ACCENT_CYAN).pack(pady=(25, 20))
         
-        txt_frame = tk.Frame(dialog, bg="#CCCCCC", bd=1)
-        txt_frame.pack(fill="both", expand=True, padx=20, pady=(0, 10))
-        entry_fdesc = tk.Text(txt_frame, font=(FONT_FAMILY, 9), bg="#FFFFFF", relief="flat", height=4)
-        entry_fdesc.pack(fill="both", expand=True, padx=1, pady=1)
+        name_entry = ctk.CTkEntry(dialog, placeholder_text="Project Name", height=45, fg_color=COLOR_BG_INPUT, border_color=COLOR_BG_MAIN)
+        name_entry.pack(fill="x", padx=40, pady=10)
         
-        def submit_form():
-            p_name, s_desc, f_desc = entry_name.get(), entry_sdesc.get(), entry_fdesc.get("1.0", tk.END).strip()
-            if not p_name: 
-                return messagebox.showerror("Error", "The project name cannot be empty!", parent=dialog)
+        desc_entry = ctk.CTkEntry(dialog, placeholder_text="Short Description", height=45, fg_color=COLOR_BG_INPUT, border_color=COLOR_BG_MAIN)
+        desc_entry.pack(fill="x", padx=40, pady=10)
+        
+        full_desc = ctk.CTkTextbox(dialog, height=100, fg_color=COLOR_BG_INPUT, border_color=COLOR_BG_MAIN, border_width=2)
+        full_desc.insert("1.0", "Full notes or description...")
+        full_desc.pack(fill="x", padx=40, pady=10)
+        
+        def submit():
+            p_name = name_entry.get().strip()
+            s_desc = desc_entry.get().strip()
+            f_desc = full_desc.get("1.0", "end").strip()
+            if not p_name:
+                return messagebox.showerror("Error", "Project name is required!", parent=dialog)
             if os.path.exists(os.path.join(DATABASE_DIR, f"{p_name.lower().replace(' ', '_')}.json")):
-                return messagebox.showerror("Error", "Project name already in use!", parent=dialog)
-            try:
-                Project(name=p_name, short_desc=s_desc, full_desc=f_desc).save()
-                dialog.destroy()
-                self.refresh_projects()
-                messagebox.showinfo("Success", f"Project '{p_name}' created!", parent=self.controller)
-            except Exception as e: 
-                messagebox.showerror("Error", f"Failed to create project: {e}", parent=dialog)
+                return messagebox.showerror("Error", "Project name already exists!", parent=dialog)
                 
-        ModernButton(dialog, "SUBMIT", bg_color=COLOR_SUCCESS, command=submit_form).pack(fill="x", padx=20, pady=(0, 15))
+            Project(name=p_name, short_desc=s_desc, full_desc=f_desc).save()
+            dialog.destroy()
+            self.refresh_projects()
+            
+        ctk.CTkButton(dialog, text="Create Project", height=45, font=(FONT_FAMILY, 14, "bold"), fg_color=COLOR_SUCCESS, hover_color="#444444", text_color="#FFFFFF", command=submit).pack(fill="x", padx=40, pady=(15, 20))
 
-    def load_selected_project(self) -> None:
-        sel = self.project_listbox.curselection()
-        if not sel: 
-            return messagebox.showwarning("Warning", "Please select one project first!")
-        self.controller.open_project(self.project_listbox.get(sel[0]))
+    def delete_project(self, name):
+        if messagebox.askyesno("Confirm", f"Are you sure you want to delete '{name}'?"):
+            Project(name=name).delete()
+            self.refresh_projects()
 
-    def delete_selected_project(self) -> None:
-        sel = self.project_listbox.curselection()
-        if not sel: 
-            return messagebox.showwarning("Warning", "Please select one project first!")
-        p_name = self.project_listbox.get(sel[0])
-        if messagebox.askyesno("Confirm", f"Are you sure you want to delete the project? '{p_name}'?"):
-            if Project(name=p_name).delete():
-                self.refresh_projects()
-                messagebox.showinfo("Success", "Project has been successfully deleted!")
-            else: 
-                messagebox.showerror("Error", "Failed to delete project file!")
+    def open_global_shortlinks(self):
+        GlobalShortlinkManagerDialog(self.controller)
+        
+    def open_global_css(self):
+        GlobalCssManagerDialog(self.controller)
 
 
-class DashboardView(tk.Frame):
-    """Pallet dashboard"""
-    def __init__(self, parent, controller) -> None:
-        super().__init__(parent, bg=COLOR_PRIMARY)
+class DashboardView(ctk.CTkFrame):
+    def __init__(self, parent, controller):
+        super().__init__(parent, fg_color=COLOR_BG_MAIN, corner_radius=0)
         self.controller = controller
-        self.active_edit_idx: Optional[int] = None
+        self._is_small_state = False
         
-        header_frame = tk.Frame(self, bg=COLOR_PRIMARY)
-        header_frame.pack(fill="x", padx=10, pady=5)
+        # Use native tk.PanedWindow for zero-flicker sash
+        self.paned = tk.PanedWindow(
+            self, orient="horizontal", sashwidth=5, sashpad=0,
+            bg="#333333", bd=0, opaqueresize=True, sashrelief="flat"
+        )
+        self.paned.pack(fill="both", expand=True)
         
-        self.lbl_project_name = tk.Label(header_frame, text="project_example", font=(FONT_FAMILY, 12, "bold"), fg="#000000", bg=COLOR_PRIMARY)
-        self.lbl_project_name.pack(side="left")
+        # -- Sidebar Navigation --
+        self.sidebar = ctk.CTkFrame(self.paned, fg_color=COLOR_BG_SIDEBAR, corner_radius=0)
+        self.paned.add(self.sidebar, minsize=50, width=160, stretch="never")
         
-        nav_frame = tk.Frame(header_frame, bg=COLOR_PRIMARY)
-        nav_frame.pack(side="right")
-        ModernButton(nav_frame, text="Home", bg_color="#D1C0C0", fg_color="#1E1E1E", font=(FONT_FAMILY, 8, "bold"), command=self.controller.go_home).pack(side="left", padx=2)
-        ModernButton(nav_frame, text="Exit", bg_color="#D1C0C0", fg_color="#1E1E1E", font=(FONT_FAMILY, 8, "bold"), command=self.controller.quit).pack(side="left", padx=2)
+        # Project Title Area
+        self.lbl_proj_title = ctk.CTkLabel(self.sidebar, text="Project", font=(FONT_FAMILY, 18, "bold"), text_color=COLOR_ACCENT_CYAN, wraplength=140)
+        self.lbl_proj_title.pack(anchor="w", padx=10, pady=(30, 20))
         
-        content_frame = tk.Frame(self, bg=COLOR_PRIMARY)
-        content_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        content_frame.columnconfigure(0, weight=1)
-        for i, w in enumerate([4, 3, 3]): 
-            content_frame.rowconfigure(i, weight=w, uniform="dash_rows")
+        # Nav Buttons
+        self.nav_btns = {}
+        tabs = [("colors", "🎨 Colors"), ("shortlinks", "🔗 Shortlinks"), ("css", "📋 CSS Snippets")]
+        for tab_id, text in tabs:
+            btn = ctk.CTkButton(
+                self.sidebar, text=text, font=(FONT_FAMILY, 13, "bold"),
+                fg_color="transparent", text_color=COLOR_TEXT_MUTED, hover_color=COLOR_BG_CARD,
+                anchor="w", height=40, command=lambda t=tab_id: self.show_tab(t)
+            )
+            btn.pack(fill="x", padx=5, pady=5)
+            self.nav_btns[tab_id] = btn
+            
+        spacer = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        spacer.pack(fill="both", expand=True)
         
-        palette_outer = tk.Frame(content_frame, bg="#332222", bd=1)
-        palette_outer.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
-        self.palette_scroll_frame = ScrollableFrame(palette_outer)
-        self.palette_scroll_frame.pack(fill="both", expand=True)
+        self.btn_back = ctk.CTkButton(
+            self.sidebar, text="← Back", font=(FONT_FAMILY, 12, "bold"),
+            fg_color=COLOR_BG_INPUT, text_color=COLOR_TEXT_LIGHT, hover_color=COLOR_BG_CARD,
+            height=40, anchor="center", command=self.controller.go_home
+        )
+        self.btn_back.pack(fill="x", padx=10, pady=30)
         
-        self.init_add_panel(content_frame)
-        self.add_panel.grid(row=1, column=0, sticky="nsew", pady=(4, 4))
+        # -- Main Content --
+        self.main_content = ctk.CTkFrame(self.paned, fg_color=COLOR_BG_MAIN, corner_radius=0)
+        self.paned.add(self.main_content, minsize=200, stretch="always")
         
-        self.init_edit_panel(content_frame)
-        self.edit_panel_empty.grid(row=2, column=0, sticky="nsew", pady=(4, 0))
+        inner = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        inner.pack(fill="both", expand=True, padx=30, pady=30)
+        inner.grid_rowconfigure(0, weight=1)
+        inner.grid_columnconfigure(0, weight=1)
         
-    def init_add_panel(self, parent: tk.Frame) -> None:
-        self.add_panel = tk.Frame(parent, bg=COLOR_BG_LIGHT, bd=1, relief="solid")
-        tk.Label(self.add_panel, text="ADD COLOR", font=(FONT_FAMILY, 9, "bold"), bg=COLOR_BG_LIGHT, fg=COLOR_TEXT_DARK).pack(anchor="w", padx=10, pady=(3, 1))
+        # Panels
+        self.panels = {}
         
-        form_wrap = tk.Frame(self.add_panel, bg=COLOR_BG_LIGHT)
-        form_wrap.pack(fill="both", expand=True, padx=10)
+        self.panels["colors"] = ctk.CTkFrame(inner, fg_color="transparent")
+        self.panels["colors"].grid_rowconfigure(1, weight=1)
+        self.panels["colors"].grid_columnconfigure(0, weight=1)
+        self.init_colors_panel()
         
-        self.add_name_entry = ModernEntry(form_wrap, "COLOR NAME")
-        self.add_name_entry.pack(fill="x", pady=(0, 2))
+        self.panels["shortlinks"] = ctk.CTkFrame(inner, fg_color="transparent")
+        self.panels["shortlinks"].grid_rowconfigure(1, weight=1)
+        self.panels["shortlinks"].grid_columnconfigure(0, weight=1)
+        self.init_shortlinks_panel()
         
-        row_fields = tk.Frame(form_wrap, bg=COLOR_BG_LIGHT)
-        row_fields.pack(fill="x", pady=(0, 2))
+        self.panels["css"] = ctk.CTkFrame(inner, fg_color="transparent")
+        self.panels["css"].grid_rowconfigure(1, weight=1)
+        self.panels["css"].grid_columnconfigure(0, weight=1)
+        self.init_css_panel()
         
-        fmt_frame = tk.Frame(row_fields, bg=COLOR_BG_LIGHT)
-        fmt_frame.pack(side="left", fill="x", expand=True, padx=(0, 4))
-        tk.Label(fmt_frame, text="FORMAT", font=(FONT_FAMILY, 8, "bold"), fg=COLOR_TEXT_DARK, bg=COLOR_BG_LIGHT, anchor="w").pack(fill="x", pady=(0, 1))
-        
-        self.add_fmt_var = tk.StringVar(value="HEX")
-        self.add_fmt_menu = ttk.Combobox(fmt_frame, textvariable=self.add_fmt_var, values=["HEX", "RGBA", "HSL"], state="readonly", font=(FONT_FAMILY, 9))
-        self.add_fmt_menu.pack(fill="x", ipady=1)
-        
-        self.add_val_entry = ModernEntry(row_fields, "COLOR VALUE")
-        self.add_val_entry.pack(side="right", fill="x", expand=True, padx=(4, 0))
-        
-        action_row = tk.Frame(form_wrap, bg=COLOR_BG_LIGHT)
-        action_row.pack(fill="x", pady=(2, 2))
-        
-        self.add_preview_box = tk.Frame(action_row, width=30, height=25, bg="#DCD1D1", bd=1, relief="solid")
-        self.add_preview_box.pack_propagate(False)
-        self.add_preview_box.pack(side="left", padx=(0, 5))
-        
-        ModernButton(action_row, text="PREVIEW", bg_color=COLOR_PRIMARY_DARK, font=(FONT_FAMILY, 7, "bold"), command=self.preview_add_color).pack(side="left", padx=2)
-        ModernButton(action_row, text="SUBMIT", bg_color=COLOR_SUCCESS, font=(FONT_FAMILY, 7, "bold"), command=self.submit_add_color).pack(side="right", padx=2)
+        # Bind sidebar resize to toggle icon-only mode
+        self.sidebar.bind("<Configure>", self._on_sidebar_resize)
 
-    def init_edit_panel(self, parent: tk.Frame) -> None:
-        self.edit_panel = tk.Frame(parent, bg=COLOR_BG_LIGHT, bd=1, relief="solid")
-        self.edit_panel_empty = tk.Frame(parent, bg="#967474", bd=1, relief="solid")
-        tk.Label(self.edit_panel_empty, text="EDIT COLOR\n\n(Select the color on the left\nClick the Edit button)", font=(FONT_FAMILY, 8, "bold"), bg="#967474", fg="#FFFFFF").pack(expand=True)
-        
-        tk.Label(self.edit_panel, text="EDIT COLOR", font=(FONT_FAMILY, 9, "bold"), bg=COLOR_BG_LIGHT, fg=COLOR_TEXT_DARK).pack(anchor="w", padx=10, pady=(3, 1))
-        form_wrap = tk.Frame(self.edit_panel, bg=COLOR_BG_LIGHT)
-        form_wrap.pack(fill="both", expand=True, padx=10)
-        
-        self.edit_name_entry = ModernEntry(form_wrap, "EDIT COLORNAME")
-        self.edit_name_entry.pack(fill="x", pady=(0, 2))
-        
-        row_fields = tk.Frame(form_wrap, bg=COLOR_BG_LIGHT)
-        row_fields.pack(fill="x", pady=(0, 2))
-        
-        fmt_frame = tk.Frame(row_fields, bg=COLOR_BG_LIGHT)
-        fmt_frame.pack(side="left", fill="x", expand=True, padx=(0, 4))
-        tk.Label(fmt_frame, text="INPUT FORMAT", font=(FONT_FAMILY, 8, "bold"), fg=COLOR_TEXT_DARK, bg=COLOR_BG_LIGHT, anchor="w").pack(fill="x", pady=(0, 1))
-        
-        self.edit_fmt_var = tk.StringVar(value="HEX")
-        self.edit_fmt_menu = ttk.Combobox(fmt_frame, textvariable=self.edit_fmt_var, values=["HEX", "RGBA", "HSL"], state="readonly", font=(FONT_FAMILY, 9))
-        self.edit_fmt_menu.pack(fill="x", ipady=1)
-        
-        self.edit_val_entry = ModernEntry(row_fields, "NEW COLOR VALUE")
-        self.edit_val_entry.pack(side="right", fill="x", expand=True, padx=(4, 0))
-        
-        action_row = tk.Frame(form_wrap, bg=COLOR_BG_LIGHT)
-        action_row.pack(fill="x", pady=(2, 2))
-        
-        self.edit_preview_box = tk.Frame(action_row, width=30, height=25, bg="#DCD1D1", bd=1, relief="solid")
-        self.edit_preview_box.pack_propagate(False)
-        self.edit_preview_box.pack(side="left")
-        
-        self.edit_val_entry.entry.bind("<KeyRelease>", self.on_edit_key_release)
-        ModernButton(action_row, text="SAVE", bg_color=COLOR_SUCCESS, font=(FONT_FAMILY, 7, "bold"), command=self.save_edit_color).pack(side="right", padx=2)
-        ModernButton(action_row, text="CANCEL", bg_color=COLOR_DANGER, font=(FONT_FAMILY, 7, "bold"), command=self.cancel_edit_mode).pack(side="right", padx=2)
+    def _on_sidebar_resize(self, event):
+        w = event.width
+        is_small = w < 130
+        if is_small != self._is_small_state:
+            self._is_small_state = is_small
+            if is_small:
+                proj_name = self.controller.current_project.name if self.controller.current_project else ""
+                self.lbl_proj_title.configure(text=proj_name[:2] + ".." if len(proj_name) > 2 else proj_name)
+                self.nav_btns["colors"].configure(text="🎨", anchor="center")
+                self.nav_btns["shortlinks"].configure(text="🔗", anchor="center")
+                self.nav_btns["css"].configure(text="📋", anchor="center")
+                self.btn_back.configure(text="←", anchor="center")
+            else:
+                proj_name = self.controller.current_project.name if self.controller.current_project else ""
+                self.lbl_proj_title.configure(text=proj_name)
+                self.nav_btns["colors"].configure(text="🎨 Colors", anchor="w")
+                self.nav_btns["shortlinks"].configure(text="🔗 Shortlinks", anchor="w")
+                self.nav_btns["css"].configure(text="📋 CSS Snippets", anchor="w")
+                self.btn_back.configure(text="← Back", anchor="center")
 
-    def load_project_details(self) -> None:
-        proj = self.controller.current_project
-        if proj:
-            self.lbl_project_name.configure(text=proj.name)
-            self.refresh_color_list()
-            self.cancel_edit_mode()
+    def on_show(self):
+        pass
+        
+    def load_project_details(self):
+        if self.controller.current_project:
+            self.lbl_proj_title.configure(text=self.controller.current_project.name)
+            self.show_tab("colors")
+            
+    def show_tab(self, tab_id):
+        for t, btn in self.nav_btns.items():
+            if t == tab_id:
+                btn.configure(fg_color=COLOR_BG_CARD, text_color=COLOR_ACCENT_CYAN)
+            else:
+                btn.configure(fg_color="transparent", text_color=COLOR_TEXT_MUTED)
+                
+        for t, panel in self.panels.items():
+            panel.grid_forget()
+            
+        self.panels[tab_id].grid(row=0, column=0, sticky="nsew")
+        
+        if tab_id == "colors":
+            self.refresh_colors()
+        elif tab_id == "shortlinks":
+            self.refresh_shortlinks()
+        elif tab_id == "css":
+            self.refresh_css()
 
-    def refresh_color_list(self) -> None:
-        for w in self.palette_scroll_frame.scrollable_frame.winfo_children(): 
+    # --- Colors Panel ---
+    def init_colors_panel(self):
+        p = self.panels["colors"]
+        
+        header = ctk.CTkFrame(p, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+        ctk.CTkLabel(header, text="Color Palette", font=(FONT_FAMILY, 24, "bold"), text_color=COLOR_TEXT_LIGHT).pack(side="left")
+        
+        # Add form directly at the top right
+        add_frame = ctk.CTkFrame(header, fg_color="transparent")
+        add_frame.pack(side="right")
+        self.color_name_var = ctk.StringVar()
+        self.color_hex_var = ctk.StringVar()
+        
+        name_wrapper = ctk.CTkFrame(add_frame, fg_color="transparent")
+        name_wrapper.pack(side="left", padx=5)
+        ctk.CTkLabel(name_wrapper, text="Color Name:", font=(FONT_FAMILY, 11, "bold"), text_color=COLOR_TEXT_MUTED).pack(anchor="w", pady=(0, 2))
+        ctk.CTkEntry(name_wrapper, textvariable=self.color_name_var, placeholder_text="e.g. Background", width=100, height=35).pack(anchor="w")
+        
+        hex_wrapper = ctk.CTkFrame(add_frame, fg_color="transparent")
+        hex_wrapper.pack(side="left", padx=5)
+        ctk.CTkLabel(hex_wrapper, text="Color Code (Auto):", font=(FONT_FAMILY, 11, "bold"), text_color=COLOR_TEXT_MUTED).pack(anchor="w", pady=(0, 2))
+        ctk.CTkEntry(hex_wrapper, textvariable=self.color_hex_var, placeholder_text="#FFF / rgb() / hsl()", width=120, height=35).pack(anchor="w")
+        
+        btn_wrapper = ctk.CTkFrame(add_frame, fg_color="transparent")
+        btn_wrapper.pack(side="left", padx=5)
+        ctk.CTkLabel(btn_wrapper, text="", font=(FONT_FAMILY, 11, "bold")).pack(pady=(0, 2)) # spacer
+        ctk.CTkButton(btn_wrapper, text="＋ Add", width=70, height=35, font=(FONT_FAMILY, 12, "bold"), fg_color=COLOR_SUCCESS, hover_color="#444444", text_color="#FFFFFF", command=self.add_color).pack()
+        
+        self.colors_scroll = ctk.CTkScrollableFrame(p, fg_color="transparent")
+        self.colors_scroll.grid(row=1, column=0, sticky="nsew")
+
+    def refresh_colors(self):
+        for w in self.colors_scroll.winfo_children():
             w.destroy()
+            
         proj = self.controller.current_project
         if not proj or not proj.colors:
-            tk.Label(self.palette_scroll_frame.scrollable_frame, text="There is no color yet.", font=(FONT_FAMILY, 8), fg="#FFF", bg=COLOR_PRIMARY_DARK, pady=10).pack(fill="x", padx=5)
-        else:
-            for i, item in enumerate(proj.colors): 
-                self.create_color_item_widget(i, item)
+            ctk.CTkLabel(self.colors_scroll, text="No colors added yet.", text_color=COLOR_TEXT_MUTED).pack(pady=20)
+            return
+            
+        for i, color in enumerate(proj.colors):
+            card = ctk.CTkFrame(self.colors_scroll, fg_color=COLOR_BG_CARD, corner_radius=8)
+            card.pack(fill="x", pady=5)
+            
+            box = ctk.CTkFrame(card, width=40, height=40, fg_color=color.get("hex", "#FFFFFF"), corner_radius=6)
+            box.pack(side="left", padx=15, pady=15)
+            
+            info = ctk.CTkFrame(card, fg_color="transparent")
+            info.pack(side="left", fill="both", expand=True, pady=10)
+            
+            ctk.CTkLabel(info, text=color.get("name", "Unnamed"), font=(FONT_FAMILY, 14, "bold"), text_color=COLOR_TEXT_LIGHT).pack(anchor="w")
+            
+            vals = ctk.CTkFrame(info, fg_color="transparent")
+            vals.pack(fill="x", pady=(5, 0))
+            for fmt in ["hex", "rgba", "hsl"]:
+                v = color.get(fmt, "")
+                btn = ctk.CTkButton(vals, text=f"{fmt.upper()}: {v}", font=(FONT_FAMILY, 11, "bold"), fg_color=COLOR_BG_INPUT, hover_color="#444444", text_color=COLOR_TEXT_MUTED, width=10, height=24)
+                btn.configure(command=lambda val=v, b=btn: self._copy_color_btn(val, b))
+                btn.pack(side="left", padx=(0, 6))
+                
+            ctk.CTkButton(card, text="🗑", width=40, fg_color="transparent", text_color=COLOR_DANGER, hover_color=COLOR_BG_INPUT, command=lambda idx=i: self.delete_color(idx)).pack(side="right", padx=15)
 
-    def copy_to_clipboard(self, widget: tk.Label, text: str) -> None:
+    def _copy_color_btn(self, text, btn):
         self.clipboard_clear()
         self.clipboard_append(text)
-        widget.configure(text="Copied!", fg=COLOR_SUCCESS)
-        self.after(1000, lambda: widget.configure(text=text, fg="#FFF"))
-
-    def create_color_item_widget(self, index: int, color_item: Dict[str, str]) -> None:
-        card_bg = "#8E6363"
-        item_frame = tk.Frame(self.palette_scroll_frame.scrollable_frame, bg=card_bg, bd=1, relief="ridge")
-        item_frame.pack(fill="x", padx=5, pady=3)
+        orig_text = btn.cget("text")
+        btn.configure(text="✅ Copied!", text_color=COLOR_TEXT_LIGHT)
+        self.after(1200, lambda: btn.configure(text=orig_text, text_color=COLOR_TEXT_MUTED) if btn.winfo_exists() else None)
         
-        color_preview_box = tk.Frame(item_frame, width=32, height=32, bg=color_item.get("hex", "#FFF"), bd=0)
-        color_preview_box.pack_propagate(False)
-        color_preview_box.pack(side="left", padx=5, pady=5)
-        
-        data_pane = tk.Frame(item_frame, bg=card_bg)
-        data_pane.pack(side="left", fill="both", expand=True, pady=5)
-        
-        title_row = tk.Frame(data_pane, bg=card_bg)
-        title_row.pack(fill="x", anchor="w")
-        tk.Label(title_row, text=color_item.get("name", "Unnamed"), font=(FONT_FAMILY, 8, "bold"), fg="#FFFFFF", bg="#000000", padx=4).pack(side="left")
-        
-        formats_row = tk.Frame(data_pane, bg=card_bg)
-        formats_row.pack(fill="x", anchor="w", pady=(4, 0))
-        
-        for fmt in ["hex", "rgba", "hsl"]:
-            grp = tk.Frame(formats_row, bg=card_bg)
-            grp.pack(fill="x", pady=1)
-            tk.Label(grp, text=f"{fmt}: ", font=(FONT_FAMILY, 7, "bold"), fg="#E6DADA", bg=card_bg).pack(side="left")
-            val_lbl = tk.Label(grp, text=color_item.get(fmt, ""), font=(FONT_FAMILY, 8), fg="#FFF", bg=COLOR_DARK_BOX, padx=4, pady=1, cursor="hand2")
-            val_lbl.pack(side="left", fill="x", expand=True)
-            val_lbl.bind("<Button-1>", lambda e, w=val_lbl, t=color_item.get(fmt, ""): self.copy_to_clipboard(w, t))
+    def add_color(self):
+        proj = self.controller.current_project
+        name = self.color_name_var.get().strip()
+        val = self.color_hex_var.get().strip()
+        if not name or not val:
+            return messagebox.showerror("Error", "Name and value required.")
             
-        action_wrap = tk.Frame(item_frame, bg=card_bg)
-        action_wrap.pack(side="right", padx=5)
-        tk.Button(action_wrap, text="✎", bg=COLOR_SUCCESS, fg="#FFFFFF", relief="flat", bd=0, font=(FONT_FAMILY, 9, "bold"), width=2, height=1, cursor="hand2", command=lambda i=index: self.enter_edit_mode(i)).pack(side="top", pady=1)
-        tk.Button(action_wrap, text="🗑", bg=COLOR_DANGER, fg="#FFFFFF", relief="flat", bd=0, font=(FONT_FAMILY, 9, "bold"), width=2, height=1, cursor="hand2", command=lambda i=index: self.delete_color_item(i)).pack(side="top", pady=1)
-
-    def preview_add_color(self) -> None:
-        res = ColorConverter.convert_any_to_all(self.add_val_entry.get(), self.add_fmt_var.get())
-        if res: 
-            self.add_preview_box.configure(bg=res["hex"])
-        else: 
-            messagebox.showerror("Error", "Invalid color format!", parent=self)
-
-    def submit_add_color(self) -> None:
-        name = self.add_name_entry.get()
-        if not name: 
-            return messagebox.showerror("Error", "Color names cannot be empty!", parent=self)
-        res = ColorConverter.convert_any_to_all(self.add_val_entry.get(), self.add_fmt_var.get())
-        if not res: 
-            return messagebox.showerror("Error", "Invalid color value!", parent=self)
+        res = ColorConverter.auto_convert(val)
+        if not res:
+            return messagebox.showerror("Error", "Invalid color format. Try #HEX, rgb(), or hsl().")
+            
+        proj.colors.append({"name": name, "hex": res["hex"], "rgba": res["rgba"], "hsl": res["hsl"]})
+        proj.save()
+        self.color_name_var.set("")
+        self.color_hex_var.set("")
+        self.refresh_colors()
         
-        proj = self.controller.current_project
-        if proj:
-            proj.colors.append({"name": name, "hex": res["hex"], "rgba": res["rgba"], "hsl": res["hsl"]})
-            proj.save()
-            self.refresh_color_list()
-            self.add_name_entry.set("")
-            self.add_val_entry.set("")
-            self.add_preview_box.configure(bg="#DCD1D1")
+    def delete_color(self, index):
+        if messagebox.askyesno("Confirm", "Delete this color?"):
+            self.controller.current_project.colors.pop(index)
+            self.controller.current_project.save()
+            self.refresh_colors()
 
-    def enter_edit_mode(self, index: int) -> None:
-        proj = self.controller.current_project
-        if not proj or index >= len(proj.colors): 
-            return
-        self.active_edit_idx = index
-        color_item = proj.colors[index]
-        self.edit_name_entry.set(color_item.get("name", ""))
-        self.edit_val_entry.set(color_item.get("hex", ""))
-        self.edit_fmt_var.set("HEX")
-        self.edit_preview_box.configure(bg=color_item.get("hex", "#DCD1D1"))
-        self.edit_panel_empty.grid_forget()
-        self.edit_panel.grid(row=2, column=0, sticky="nsew", pady=(4, 0))
-
-    def cancel_edit_mode(self) -> None:
-        self.active_edit_idx = None
-        self.edit_panel.grid_forget()
-        self.edit_panel_empty.grid(row=2, column=0, sticky="nsew", pady=(4, 0))
-
-    def on_edit_key_release(self, event) -> None:
-        res = ColorConverter.convert_any_to_all(self.edit_val_entry.get(), self.edit_fmt_var.get())
-        if res: 
-            self.edit_preview_box.configure(bg=res["hex"])
-
-    def save_edit_color(self) -> None:
-        if self.active_edit_idx is None: 
-            return
-        name = self.edit_name_entry.get()
-        if not name: 
-            return messagebox.showerror("Error", "Color names cannot be empty!", parent=self)
-        res = ColorConverter.convert_any_to_all(self.edit_val_entry.get(), self.edit_fmt_var.get())
-        if not res: 
-            return messagebox.showerror("Error", "Invalid color value!", parent=self)
+    # --- Shortlinks Panel ---
+    def init_shortlinks_panel(self):
+        p = self.panels["shortlinks"]
+        header = ctk.CTkFrame(p, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+        ctk.CTkLabel(header, text="Project Shortlinks", font=(FONT_FAMILY, 24, "bold"), text_color=COLOR_TEXT_LIGHT).pack(side="left")
+        ctk.CTkButton(header, text="＋ Add Shortlink", width=120, height=35, fg_color=COLOR_ACCENT_TEAL, hover_color="#666666", text_color="#000000", command=self.add_proj_shortlink).pack(side="right")
         
-        proj = self.controller.current_project
-        if proj and self.active_edit_idx < len(proj.colors):
-            proj.colors[self.active_edit_idx] = {"name": name, "hex": res["hex"], "rgba": res["rgba"], "hsl": res["hsl"]}
-            proj.save()
-            self.refresh_color_list()
-            self.cancel_edit_mode()
+        self.sl_scroll = ctk.CTkScrollableFrame(p, fg_color="transparent")
+        self.sl_scroll.grid(row=1, column=0, sticky="nsew")
 
-    def delete_color_item(self, index: int) -> None:
+    def refresh_shortlinks(self):
+        for w in self.sl_scroll.winfo_children():
+            w.destroy()
         proj = self.controller.current_project
-        if proj and messagebox.askyesno("Confirm", "Are you sure you want to remove this color?"):
-            proj.colors.pop(index)
-            proj.save()
-            self.refresh_color_list()
-            self.cancel_edit_mode()
+        if proj and proj.shortlinks:
+            for i, sl in enumerate(proj.shortlinks):
+                self._build_sl_card(self.sl_scroll, sl, i, is_global=False)
+        else:
+            ctk.CTkLabel(self.sl_scroll, text="No project shortlinks yet.", text_color=COLOR_TEXT_MUTED).pack(pady=10)
+            
+        global_sl = GlobalShortlinkStore.load()
+        if global_sl:
+            ctk.CTkLabel(self.sl_scroll, text="--- GLOBAL SHORTLINKS ---", font=(FONT_FAMILY, 12, "bold"), text_color=COLOR_TEXT_MUTED).pack(pady=(15, 5))
+            for i, sl in enumerate(global_sl):
+                self._build_sl_card(self.sl_scroll, sl, i, is_global=True)
+            
+    def _build_sl_card(self, parent, sl, index, is_global=False):
+        card = ctk.CTkFrame(parent, fg_color=COLOR_BG_CARD, corner_radius=8)
+        card.pack(fill="x", pady=5)
+        
+        ctk.CTkLabel(card, text=sl.get("icon", "🔗"), font=("Segoe UI Emoji", 24)).pack(side="left", padx=15, pady=15)
+        info = ctk.CTkFrame(card, fg_color="transparent")
+        info.pack(side="left", fill="both", expand=True, pady=10)
+        
+        ctk.CTkLabel(info, text=sl.get("name", "Link"), font=(FONT_FAMILY, 15, "bold"), text_color=COLOR_TEXT_LIGHT).pack(anchor="w")
+        url = sl.get("url", "")
+        url_lbl = ctk.CTkLabel(info, text=url if len(url) < 40 else url[:37]+"...", font=(FONT_FAMILY, 11), text_color=COLOR_TEXT_MUTED, cursor="hand2")
+        url_lbl.pack(anchor="w")
+        url_lbl.bind("<Button-1>", lambda e, u=url: webbrowser.open(u))
+        
+        btn_frame = ctk.CTkFrame(card, fg_color="transparent")
+        btn_frame.pack(side="right", padx=15)
+        
+        ctk.CTkButton(btn_frame, text="🌐", width=40, fg_color="transparent", text_color=COLOR_ACCENT_CYAN, hover_color=COLOR_BG_INPUT, command=lambda u=url: webbrowser.open(u)).pack(side="left", padx=2)
+        if not is_global:
+            ctk.CTkButton(btn_frame, text="✎", width=40, fg_color="transparent", text_color=COLOR_SUCCESS, hover_color=COLOR_BG_INPUT, command=lambda i=index: self.edit_proj_shortlink(i)).pack(side="left", padx=2)
+            ctk.CTkButton(btn_frame, text="🗑", width=40, fg_color="transparent", text_color=COLOR_DANGER, hover_color=COLOR_BG_INPUT, command=lambda i=index: self.del_proj_shortlink(i)).pack(side="left", padx=2)
+        else:
+            ctk.CTkLabel(btn_frame, text="(Global)", font=(FONT_FAMILY, 10, "italic"), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=5)
+
+    def add_proj_shortlink(self):
+        def on_submit(data):
+            self.controller.current_project.shortlinks.append(data)
+            self.controller.current_project.save()
+            self.refresh_shortlinks()
+        ShortlinkFormDialog(self.controller, "Add Project Shortlink", on_submit=on_submit)
+
+    def edit_proj_shortlink(self, index):
+        def on_submit(data):
+            self.controller.current_project.shortlinks[index] = data
+            self.controller.current_project.save()
+            self.refresh_shortlinks()
+        ShortlinkFormDialog(self.controller, "Edit Project Shortlink", initial_data=self.controller.current_project.shortlinks[index], on_submit=on_submit)
+
+    def del_proj_shortlink(self, index):
+        if messagebox.askyesno("Confirm", "Delete this shortlink?"):
+            self.controller.current_project.shortlinks.pop(index)
+            self.controller.current_project.save()
+            self.refresh_shortlinks()
+
+    # --- CSS Panel ---
+    def init_css_panel(self):
+        p = self.panels["css"]
+        header = ctk.CTkFrame(p, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+        ctk.CTkLabel(header, text="Project CSS Snippets", font=(FONT_FAMILY, 24, "bold"), text_color=COLOR_TEXT_LIGHT).pack(side="left")
+        ctk.CTkButton(header, text="＋ Add Snippet", width=120, height=35, fg_color=COLOR_ACCENT_TEAL, hover_color="#666666", text_color="#000000", command=self.add_proj_css).pack(side="right")
+        
+        self.css_scroll = ctk.CTkScrollableFrame(p, fg_color="transparent")
+        self.css_scroll.grid(row=1, column=0, sticky="nsew")
+
+    def refresh_css(self):
+        for w in self.css_scroll.winfo_children():
+            w.destroy()
+        proj = self.controller.current_project
+        if proj and proj.snippets:
+            for i, sn in enumerate(proj.snippets):
+                self._build_css_card(self.css_scroll, sn, i, is_global=False)
+        else:
+            ctk.CTkLabel(self.css_scroll, text="No project CSS snippets yet.", text_color=COLOR_TEXT_MUTED).pack(pady=10)
+            
+        global_sn = GlobalSnippetStore.load()
+        if global_sn:
+            ctk.CTkLabel(self.css_scroll, text="--- GLOBAL CSS SNIPPETS ---", font=(FONT_FAMILY, 12, "bold"), text_color=COLOR_TEXT_MUTED).pack(pady=(15, 5))
+            for i, sn in enumerate(global_sn):
+                self._build_css_card(self.css_scroll, sn, i, is_global=True)
+            
+    def _build_css_card(self, parent, sn, index, is_global=False):
+        card = ctk.CTkFrame(parent, fg_color=COLOR_BG_CARD, corner_radius=8)
+        card.pack(fill="x", pady=5)
+        
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.pack(fill="x", padx=15, pady=(15, 5))
+        
+        ctk.CTkLabel(top, text=f"📋 {sn.get('name', '')}", font=(FONT_FAMILY, 15, "bold"), text_color=COLOR_TEXT_LIGHT).pack(side="left")
+        
+        btn_frame = ctk.CTkFrame(top, fg_color="transparent")
+        btn_frame.pack(side="right")
+        code = sn.get("code", "")
+        
+        copy_btn = ctk.CTkButton(btn_frame, text="⎘ Copy", width=50, height=24, font=(FONT_FAMILY, 10, "bold"), fg_color=COLOR_BG_INPUT, text_color=COLOR_TEXT_LIGHT, hover_color=COLOR_ACCENT_TEAL, command=lambda c=code, b=btn_frame: self._copy_css(c, b))
+        copy_btn.pack(side="left", padx=2)
+        
+        ctk.CTkButton(btn_frame, text="👁", width=30, height=24, fg_color="transparent", text_color=COLOR_TEXT_LIGHT, hover_color=COLOR_BG_INPUT, command=lambda s=sn: CssSnippetViewDialog(self.controller, s)).pack(side="left", padx=2)
+        if not is_global:
+            ctk.CTkButton(btn_frame, text="✎", width=30, height=24, fg_color="transparent", text_color=COLOR_SUCCESS, hover_color=COLOR_BG_INPUT, command=lambda i=index: self.edit_proj_css(i)).pack(side="left", padx=2)
+            ctk.CTkButton(btn_frame, text="🗑", width=30, height=24, fg_color="transparent", text_color=COLOR_DANGER, hover_color=COLOR_BG_INPUT, command=lambda i=index: self.del_proj_css(i)).pack(side="left", padx=2)
+        else:
+            ctk.CTkLabel(btn_frame, text="(Global)", font=(FONT_FAMILY, 10, "italic"), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=5)
+        
+        # Preview
+        lines = code.split('\n')
+        preview = '\n'.join(lines[:3]) + ("\n..." if len(lines) > 3 else "")
+        if preview.strip():
+            prev_frame = ctk.CTkFrame(card, fg_color=COLOR_BG_INPUT, corner_radius=4)
+            prev_frame.pack(fill="x", padx=15, pady=(0, 15))
+            ctk.CTkLabel(prev_frame, text=preview, font=("Consolas", 12), text_color=COLOR_ACCENT_CYAN, justify="left", anchor="w").pack(fill="x", padx=10, pady=10)
+
+    def _copy_css(self, code, parent_btn):
+        self.clipboard_clear()
+        self.clipboard_append(code)
+        # Visual feedback omitted for brevity, simple copy is fine
+
+    def add_proj_css(self):
+        def on_submit(data):
+            self.controller.current_project.snippets.append(data)
+            self.controller.current_project.save()
+            self.refresh_css()
+        CssSnippetFormDialog(self.controller, "Add CSS Snippet", on_submit=on_submit)
+
+    def edit_proj_css(self, index):
+        def on_submit(data):
+            self.controller.current_project.snippets[index] = data
+            self.controller.current_project.save()
+            self.refresh_css()
+        CssSnippetFormDialog(self.controller, "Edit CSS Snippet", initial_data=self.controller.current_project.snippets[index], on_submit=on_submit)
+
+    def del_proj_css(self, index):
+        if messagebox.askyesno("Confirm", "Delete this snippet?"):
+            self.controller.current_project.snippets.pop(index)
+            self.controller.current_project.save()
+            self.refresh_css()
+
+# ============================================================================
+# GLOBAL MANAGERS (Modernized)
+# ============================================================================
+
+class GlobalShortlinkManagerDialog(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Global Shortlinks")
+        self.geometry("500x600")
+        self.minsize(450, 500)
+        self.attributes('-alpha', 0.98)
+        self.configure(fg_color=COLOR_BG_MAIN)
+        
+        self.transient(parent)
+        self.grab_set()
+        
+        self.shortlinks = GlobalShortlinkStore.load()
+        
+        header = ctk.CTkFrame(self, fg_color=COLOR_BG_SIDEBAR, corner_radius=0)
+        header.pack(fill="x")
+        ctk.CTkLabel(header, text="🌐 Global Shortlinks", font=(FONT_FAMILY, 20, "bold"), text_color=COLOR_ACCENT_CYAN).pack(pady=(20, 5))
+        ctk.CTkLabel(header, text="Accessible across all projects.", font=(FONT_FAMILY, 12), text_color=COLOR_TEXT_MUTED).pack(pady=(0, 20))
+        
+        self.scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.scroll.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        ctk.CTkButton(self, text="＋ Add Global Shortlink", height=45, fg_color=COLOR_SUCCESS, hover_color="#444444", text_color="#FFFFFF", command=self._add).pack(fill="x", padx=20, pady=20)
+        
+        self._refresh()
+        
+    def _refresh(self):
+        for w in self.scroll.winfo_children():
+            w.destroy()
+        if not self.shortlinks:
+            ctk.CTkLabel(self.scroll, text="No global shortlinks.", text_color=COLOR_TEXT_MUTED).pack(pady=20)
+            return
+        for i, sl in enumerate(self.shortlinks):
+            card = ctk.CTkFrame(self.scroll, fg_color=COLOR_BG_CARD, corner_radius=8)
+            card.pack(fill="x", pady=5)
+            
+            ctk.CTkLabel(card, text=sl.get("icon", "🔗"), font=("Segoe UI Emoji", 20)).pack(side="left", padx=15)
+            
+            info = ctk.CTkFrame(card, fg_color="transparent")
+            info.pack(side="left", fill="both", expand=True, pady=10)
+            ctk.CTkLabel(info, text=sl.get("name", "Link"), font=(FONT_FAMILY, 14, "bold"), text_color=COLOR_TEXT_LIGHT).pack(anchor="w")
+            
+            btn_frame = ctk.CTkFrame(card, fg_color="transparent")
+            btn_frame.pack(side="right", padx=15)
+            
+            ctk.CTkButton(btn_frame, text="🌐", width=35, fg_color="transparent", text_color=COLOR_ACCENT_CYAN, hover_color=COLOR_BG_INPUT, command=lambda u=sl.get("url", ""): webbrowser.open(u)).pack(side="left", padx=2)
+            ctk.CTkButton(btn_frame, text="✎", width=35, fg_color="transparent", text_color=COLOR_SUCCESS, hover_color=COLOR_BG_INPUT, command=lambda i=i: self._edit(i)).pack(side="left", padx=2)
+            ctk.CTkButton(btn_frame, text="🗑", width=35, fg_color="transparent", text_color=COLOR_DANGER, hover_color=COLOR_BG_INPUT, command=lambda i=i: self._delete(i)).pack(side="left", padx=2)
+
+    def _add(self):
+        def on_submit(data):
+            self.shortlinks.append(data)
+            GlobalShortlinkStore.save(self.shortlinks)
+            self._refresh()
+        ShortlinkFormDialog(self, "Add Global Shortlink", on_submit=on_submit)
+
+    def _edit(self, index):
+        def on_submit(data):
+            self.shortlinks[index] = data
+            GlobalShortlinkStore.save(self.shortlinks)
+            self._refresh()
+        ShortlinkFormDialog(self, "Edit Global Shortlink", initial_data=self.shortlinks[index], on_submit=on_submit)
+
+    def _delete(self, index):
+        if messagebox.askyesno("Confirm", "Delete this global shortlink?"):
+            self.shortlinks.pop(index)
+            GlobalShortlinkStore.save(self.shortlinks)
+            self._refresh()
+
+class GlobalCssManagerDialog(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Global CSS Snippets")
+        self.geometry("600x650")
+        self.minsize(500, 550)
+        self.attributes('-alpha', 0.98)
+        self.configure(fg_color=COLOR_BG_MAIN)
+        
+        self.transient(parent)
+        self.grab_set()
+        
+        self.snippets = GlobalSnippetStore.load()
+        
+        header = ctk.CTkFrame(self, fg_color=COLOR_BG_SIDEBAR, corner_radius=0)
+        header.pack(fill="x")
+        ctk.CTkLabel(header, text="💄 Global CSS Snippets", font=(FONT_FAMILY, 20, "bold"), text_color=COLOR_ACCENT_CYAN).pack(pady=(20, 5))
+        ctk.CTkLabel(header, text="Accessible across all projects.", font=(FONT_FAMILY, 12), text_color=COLOR_TEXT_MUTED).pack(pady=(0, 20))
+        
+        self.scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.scroll.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        ctk.CTkButton(self, text="＋ Add Global CSS", height=45, fg_color=COLOR_SUCCESS, hover_color="#444444", text_color="#FFFFFF", command=self._add).pack(fill="x", padx=20, pady=20)
+        
+        self._refresh()
+        
+    def _refresh(self):
+        for w in self.scroll.winfo_children():
+            w.destroy()
+        if not self.snippets:
+            ctk.CTkLabel(self.scroll, text="No global snippets.", text_color=COLOR_TEXT_MUTED).pack(pady=20)
+            return
+        for i, sn in enumerate(self.snippets):
+            card = ctk.CTkFrame(self.scroll, fg_color=COLOR_BG_CARD, corner_radius=8)
+            card.pack(fill="x", pady=5)
+            
+            top = ctk.CTkFrame(card, fg_color="transparent")
+            top.pack(fill="x", padx=15, pady=(15, 5))
+            
+            ctk.CTkLabel(top, text=f"📋 {sn.get('name', '')}", font=(FONT_FAMILY, 16, "bold"), text_color=COLOR_TEXT_LIGHT).pack(side="left")
+            
+            btn_frame = ctk.CTkFrame(top, fg_color="transparent")
+            btn_frame.pack(side="right")
+            
+            ctk.CTkButton(btn_frame, text="👁", width=35, fg_color="transparent", text_color=COLOR_TEXT_LIGHT, hover_color=COLOR_BG_INPUT, command=lambda s=sn: CssSnippetViewDialog(self, s)).pack(side="left", padx=2)
+            ctk.CTkButton(btn_frame, text="✎", width=35, fg_color="transparent", text_color=COLOR_SUCCESS, hover_color=COLOR_BG_INPUT, command=lambda i=i: self._edit(i)).pack(side="left", padx=2)
+            ctk.CTkButton(btn_frame, text="🗑", width=35, fg_color="transparent", text_color=COLOR_DANGER, hover_color=COLOR_BG_INPUT, command=lambda i=i: self._delete(i)).pack(side="left", padx=2)
+            
+            prev_frame = ctk.CTkFrame(card, fg_color=COLOR_BG_INPUT, corner_radius=4)
+            prev_frame.pack(fill="x", padx=15, pady=(0, 15))
+            code = sn.get("code", "")
+            lines = code.split('\n')
+            preview = '\n'.join(lines[:3]) + ("\n..." if len(lines) > 3 else "")
+            ctk.CTkLabel(prev_frame, text=preview, font=("Consolas", 12), text_color=COLOR_ACCENT_TEAL, justify="left", anchor="w").pack(fill="x", padx=10, pady=10)
+
+    def _add(self):
+        def on_submit(data):
+            self.snippets.append(data)
+            GlobalSnippetStore.save(self.snippets)
+            self._refresh()
+        CssSnippetFormDialog(self, "Add Global CSS", on_submit=on_submit)
+
+    def _edit(self, index):
+        def on_submit(data):
+            self.snippets[index] = data
+            GlobalSnippetStore.save(self.snippets)
+            self._refresh()
+        CssSnippetFormDialog(self, "Edit Global CSS", initial_data=self.snippets[index], on_submit=on_submit)
+
+    def _delete(self, index):
+        if messagebox.askyesno("Confirm", "Delete this global snippet?"):
+            self.snippets.pop(index)
+            GlobalSnippetStore.save(self.snippets)
+            self._refresh()

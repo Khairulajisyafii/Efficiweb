@@ -1,25 +1,43 @@
-import tkinter as tk
+import os
+import sys
+import customtkinter as ctk
 from models import Project
 from views import HomeView, DashboardView
 
-class App(tk.Tk):
-    """main controller"""
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+def resource_path(relative_path: str) -> str:
+    """Resolve path aset — bekerja di mode dev maupun setelah di-bundle PyInstaller."""
+    base = getattr(sys, '_MEIPASS', os.path.abspath("."))
+    return os.path.join(base, relative_path)
+
+class App(ctk.CTk):
+    """Main Application Controller"""
     def __init__(self):
         super().__init__()
-        self.iconphoto(True,tk.PhotoImage(file="icon.png"))
-        self.title("Efficiweb v.01")
-        self.geometry("450x600")
-        self.resizable(False, False)
+        
+        try:
+            self.iconbitmap(resource_path("icon.ico"))
+        except Exception:
+            pass # Ignore if icon is missing during dev
+            
+        self.title("Efficiweb - Modern Edition")
+        self.geometry("800x600")
+        self.minsize(250, 400)
+        
+        # Transparent glass feel
+        self.attributes('-alpha', 0.97)
+        
         self.current_project = None
         
-        container = tk.Frame(self)
-        container.pack(side="top", fill="both", expand=True)
-        container.grid_rowconfigure(0, weight=1)
-        container.grid_columnconfigure(0, weight=1)
+        # Grid setup for main window
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
         
         self.frames = {}
         for F in (HomeView, DashboardView):
-            frame = F(container, self)
+            frame = F(self, self)
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
         
@@ -27,6 +45,8 @@ class App(tk.Tk):
         
     def show_frame(self, container_class):
         self.frames[container_class].tkraise()
+        if hasattr(self.frames[container_class], "on_show"):
+            self.frames[container_class].on_show()
         
     def open_project(self, name):
         self.current_project = Project.load(name)
@@ -35,7 +55,7 @@ class App(tk.Tk):
             self.show_frame(DashboardView)
             
     def go_home(self):
-        self.frames[HomeView].refresh_projects()
+        self.frames[HomeView].on_show()
         self.show_frame(HomeView)
 
 if __name__ == "__main__":

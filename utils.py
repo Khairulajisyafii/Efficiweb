@@ -80,8 +80,8 @@ class ColorConverter:
         return int(h * 360), int(s * 100), int(l * 100)
 
     @classmethod
-    def convert_any_to_all(cls, val: str, fmt: str) -> Optional[Dict[str, str]]:
-        rgb_data = cls.parse_hex(val) if fmt == "HEX" else cls.parse_rgba(val) if fmt == "RGBA" else cls.parse_hsl(val)
+    def auto_convert(cls, val: str) -> Optional[Dict[str, str]]:
+        rgb_data = cls.parse_hex(val) or cls.parse_rgba(val) or cls.parse_hsl(val)
         if not rgb_data: 
             return None
         r, g, b, a = rgb_data
@@ -92,3 +92,7 @@ class ColorConverter:
             "hsl": f"hsla({h}, {s}%, {l}%, {a})" if a != 1.0 else f"hsl({h}, {s}%, {l}%)",
             "raw_rgb": (r, g, b, a)
         }
+
+    @classmethod
+    def convert_any_to_all(cls, val: str, fmt: str) -> Optional[Dict[str, str]]:
+        return cls.auto_convert(val)
